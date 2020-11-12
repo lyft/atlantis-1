@@ -1,0 +1,12 @@
+repos:
+    - id: /github.com/n7sh/*/
+      apply_requirements: [approved, mergeable]
+policies:
+  conftest_version: "0.21.0"
+  policy_sets:
+    - name: no-null-resources
+      path: /go/src/github.com/runatlantis/atlantis/testroot/policy
+      source: local
+    - name: no-null-resources-duplicate
+      path: /go/src/github.com/runatlantis/atlantis/testroot/policy2
+      source: local
