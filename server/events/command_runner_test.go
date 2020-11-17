@@ -437,7 +437,7 @@ func TestApplyWithPassingPolicy(t *testing.T) {
 
 	When(githubGetter.GetPullRequest(fixtures.GithubRepo, fixtures.Pull.Num)).ThenReturn(pull, nil)
 	When(eventParsing.ParseGithubPull(pull)).ThenReturn(fixtures.Pull, fixtures.Pull.BaseRepo, fixtures.GithubRepo, nil)
-	_, _ = boltDB.UpdatePullWithResults(fixtures.Pull, []models.ProjectResult{
+	boltDB.UpdatePullWithResults(fixtures.Pull, []models.ProjectResult{
 		{
 			Command:            models.PolicyCheckCommand,
 			PolicyCheckSuccess: &models.PolicyCheckSuccess{},
