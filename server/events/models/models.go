@@ -435,6 +435,11 @@ func (p ProjectCommandContext) GetShowResultFileName() string {
 	return fmt.Sprintf("%s-%s.json", projName, p.Workspace)
 }
 
+// Gets a unique identifier for the current pull request as a single string
+func (p *ProjectCommandContext) PullInfo() string {
+	return fmt.Sprintf("%s/%d/%s", p.BaseRepo.FullName, p.Pull.Num, p.ProjectName)
+}
+
 // SplitRepoFullName splits a repo full name up into its owner and repo
 // name segments. If the repoFullName is malformed, may return empty
 // strings for owner or repo.
@@ -652,6 +657,15 @@ const (
 // ie. policy_check becomes Policy Check
 func (c CommandName) TitleString() string {
 	return strings.Title(strings.ReplaceAll(strings.ToLower(c.String()), "_", " "))
+}
+
+type TerraformOutputLine struct {
+	ProjectInfo string
+
+	Line string
+
+	ClearBuffBefore bool
+	ClearBuffAfter  bool
 }
 
 // String returns the string representation of c.

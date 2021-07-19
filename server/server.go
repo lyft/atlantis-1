@@ -68,11 +68,12 @@ const (
 	// route. ex:
 	//   mux.Router.Get(LockViewRouteName).URL(LockViewRouteIDQueryParam, "my id")
 	LockViewRouteIDQueryParam = "id"
-
+	//LogViewRouteName is the named route in mux.Router for the log stream view.
+	//Can be retrieved by mux.Router.Get(LogViewRouteName)
+	LogViewRouteName = "log-detail"
 	// binDirName is the name of the directory inside our data dir where
 	// we download binaries.
 	BinDirName = "bin"
-
 	// terraformPluginCacheDir is the name of the dir inside our data dir
 	// where we tell terraform to cache plugins and modules.
 	TerraformPluginCacheDirName = "plugin-cache"
@@ -94,8 +95,11 @@ type Server struct {
 	GithubAppController           *controllers.GithubAppController
 	LocksController               *controllers.LocksController
 	StatusController              *controllers.StatusController
+	LogStreamingController        *controllers.LogStreamingController
 	IndexTemplate                 templates.TemplateWriter
 	LockDetailTemplate            templates.TemplateWriter
+	LogStreamingTemplate          templates.TemplateWriter
+	LogStreamErrorTemplate        templates.TemplateWriter
 	SSLCertFile                   string
 	SSLKeyFile                    string
 	Drainer                       *events.Drainer
@@ -273,6 +277,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 	}
 	vcsClient := vcs.NewClientProxy(githubClient, gitlabClient, bitbucketCloudClient, bitbucketServerClient, azuredevopsClient)
 	commitStatusUpdater := &events.DefaultCommitStatusUpdater{Client: vcsClient, StatusName: userConfig.VCSStatusName}
+	terraformOutputChan := make(chan *models.TerraformOutputLine)
 
 	binDir, err := mkSubDir(userConfig.DataDir, BinDirName)
 
@@ -296,7 +301,8 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		config.DefaultTFVersionFlag,
 		userConfig.TFDownloadURL,
 		&terraform.DefaultDownloader{},
-		true)
+		true,
+		terraformOutputChan)
 	// The flag.Lookup call is to detect if we're running in a unit test. If we
 	// are, then we don't error out because we don't have/want terraform
 	// installed on our CI system where the unit tests run.
@@ -385,6 +391,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		AtlantisURL:               parsedURL,
 		LockViewRouteIDQueryParam: LockViewRouteIDQueryParam,
 		LockViewRouteName:         LockViewRouteName,
+		LogViewRouteName:          LogViewRouteName,
 		Underlying:                underlyingRouter,
 	}
 
@@ -499,6 +506,7 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		WorkingDir:          workingDir,
 		Webhooks:            webhooksManager,
 		WorkingDirLocker:    workingDirLocker,
+		TerraformOutputChan: terraformOutputChan,
 	}
 
 	dbUpdater := &events.DBUpdater{
@@ -621,6 +629,18 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		DB:                 boltdb,
 		DeleteLockCommand:  deleteLockCommand,
 	}
+
+	logStreamingController := &controllers.LogStreamingController{
+		AtlantisVersion:        config.AtlantisVersion,
+		AtlantisURL:            parsedURL,
+		Logger:                 logger,
+		LogStreamTemplate:      templates.LogStreamingTemplate,
+		LogStreamErrorTemplate: templates.LogStreamErrorTemplate,
+		Db:                     boltdb,
+		TerraformOutputChan:    terraformOutputChan,
+		WebsocketHandler:       controllers.NewWebsocketHandler(),
+	}
+
 	eventsController := &events_controllers.VCSEventsController{
 		CommandRunner:                   commandRunner,
 		PullCleaner:                     pullClosedExecutor,
@@ -698,9 +718,12 @@ func NewServer(userConfig UserConfig, config Config) (*Server, error) {
 		VCSEventsController:           eventsController,
 		GithubAppController:           githubAppController,
 		LocksController:               locksController,
+		LogStreamingController:        logStreamingController,
 		StatusController:              statusController,
 		IndexTemplate:                 templates.IndexTemplate,
 		LockDetailTemplate:            templates.LockTemplate,
+		LogStreamingTemplate:          templates.LogStreamingTemplate,
+		LogStreamErrorTemplate:        templates.LogStreamErrorTemplate,
 		SSLKeyFile:                    userConfig.SSLKeyFile,
 		SSLCertFile:                   userConfig.SSLCertFile,
 		Drainer:                       drainer,
@@ -724,6 +747,8 @@ func (s *Server) Start() error {
 	s.Router.HandleFunc("/locks", s.LocksController.DeleteLock).Methods("DELETE").Queries("id", "{id:.*}")
 	s.Router.HandleFunc("/lock", s.LocksController.GetLock).Methods("GET").
 		Queries(LockViewRouteIDQueryParam, fmt.Sprintf("{%s}", LockViewRouteIDQueryParam)).Name(LockViewRouteName)
+	s.Router.HandleFunc("/logStreaming/{org}/{repo}/{pull}/{project}", s.LogStreamingController.GetLogStream).Methods("GET").Name(LogViewRouteName)
+	s.Router.HandleFunc("/logStreaming/{org}/{repo}/{pull}/{project}/ws", s.LogStreamingController.GetLogStreamWS).Methods("GET")
 	n := negroni.New(&negroni.Recovery{
 		Logger:     log.New(os.Stdout, "", log.LstdFlags),
 		PrintStack: false,
@@ -740,6 +765,10 @@ func (s *Server) Start() error {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go s.ScheduledExecutorService.Run()
+
+	go func() {
+		s.LogStreamingController.Listen()
+	}()
 
 	server := &http.Server{Addr: fmt.Sprintf(":%d", s.Port), Handler: n}
 	go func() {
